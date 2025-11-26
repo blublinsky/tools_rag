@@ -1,0 +1,67 @@
+[MAIN]
+# Add tools_rag to the Python path for imports
+init-hook='import sys; sys.path.append(".")'
+
+# Files or directories to be skipped
+ignore=CVS,.git,__pycache__,.pytest_cache,htmlcov
+
+# Use multiple processes to speed up Pylint
+jobs=1
+
+# Pickle collected data for later comparisons
+persistent=yes
+
+[MESSAGES CONTROL]
+# Disable specific warnings that are too strict or false positives
+disable=
+    import-error,           # Disable false positive import errors
+    too-few-public-methods, # Allow simple classes
+    fixme                   # Allow TODO comments
+    
+[FORMAT]
+# Maximum number of characters on a single line
+max-line-length=120
+
+# Maximum number of lines in a module
+max-module-lines=1000
+
+[DESIGN]
+# Maximum number of arguments for function / method
+max-args=7
+
+# Maximum number of attributes for a class
+max-attributes=10
+
+# Maximum number of local variables for function / method body
+max-locals=25
+
+# Maximum number of return / yield for function / method body
+max-returns=6
+
+# Maximum number of branch for function / method body
+max-branches=15
+
+[BASIC]
+# Good variable names which should always be accepted
+good-names=i,j,k,ex,Run,_,id,q,d,s,t,r,k
+
+# Regular expression matching correct function names
+function-rgx=[a-z_][a-z0-9_]{2,50}$
+
+# Regular expression matching correct variable names
+variable-rgx=[a-z_][a-z0-9_]{1,30}$
+
+# Regular expression matching correct constant names
+const-rgx=(([A-Z_][A-Z0-9_]*)|(__.*__))$
+
+[SIMILARITIES]
+# Minimum lines number of a similarity
+min-similarity-lines=10
+
+[REPORTS]
+# Set the output format
+output-format=colorized
+
+# Tells whether to display a full report or only the messages
+reports=no
+
