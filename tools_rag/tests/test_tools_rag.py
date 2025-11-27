@@ -148,8 +148,8 @@ class TestToolsRAG:
         assert "get_time" in all_data["ids"]
         assert "set_alarm" in all_data["ids"]
 
-    def test_update_tool(self, rag):
-        """Test updating an existing tool (upsert)."""
+    def test_add_tool_upsert(self, rag):
+        """Test upsert behavior - adding a tool with existing name updates it."""
         updated_tool = {
             "name": "get_weather",
             "desc": "Get detailed weather with extended forecast",

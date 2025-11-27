@@ -11,27 +11,95 @@ When your LLM has access to hundreds of tools, including all of them in the prom
 
 **Solution:** Use hybrid RAG to pre-filter from 100+ tools down to the top 10 most relevant tools before the LLM sees them.
 
+## 🔬 How It Works
+
+### Hybrid Retrieval
+
+Combines two complementary retrieval methods:
+
+1. **Dense (Semantic) Retrieval**
+   - Uses sentence-transformers embeddings
+   - Captures semantic meaning
+   - Good for natural language queries
+   
+   The query and each tool are encoded into high-dimensional vector representations using the `all-mpnet-base-v2` model. Tools are then ranked by cosine similarity between their embeddings and the query embedding stored in ChromaDB. This approach excels at understanding intent—for example, "What's the temperature outside?" matches `get_weather` even though they share no exact words. Semantic search naturally handles synonyms, paraphrasing, and contextual variations without requiring exact keyword matches.
+
+2. **Sparse (BM25) Retrieval**
+   - Tokenizes into individual words
+   - Term frequency + inverse document frequency scoring
+   - Excels at exact matches for technical terms
+   
+   BM25 (Best Matching 25) tokenizes the query and tools into individual words, then ranks tools based on term frequency (TF) and inverse document frequency (IDF). Tools containing exact query terms score higher, with adjustments for document length and term saturation. This approach excels at precise matching—for example, "get_weather function" will strongly match the `get_weather` tool because of the exact term overlap. Keyword search is particularly effective for technical names, function identifiers, and domain-specific terminology where exact matches are critical.
+
+3. **Hybrid**
+   - `final_score = alpha × dense_score + (1 - alpha) × sparse_score`
+   - Rank-based scoring for stability
+   - Threshold filtering for quality
+   
+   The hybrid approach fuses both retrieval scores using a weighted formula where `alpha` controls the balance. Each method produces a ranked list of tools, which are then converted to rank-based scores for stability. The final ranking combines these scores, ensuring that tools appearing high in either method (or both) rise to the top. This fusion mechanism provides robust retrieval that works equally well whether users phrase queries in natural language ("What's the temperature?") or use technical terminology ("get_weather API").
+
+## ⚠️ Important: Tool Names as Identifiers
+
+**Tool names must be unique.** Each tool is identified by its `name` field, which serves as the primary key in the system. If you add a tool with a name that already exists, it will overwrite the previous tool with that name. This is intentional behavior that enables the upsert functionality in CRUD operations.
+
+**Best practices:**
+- Use descriptive, unique names like `get_weather`, `send_email_v2`, `search_products_amazon`
+- Avoid generic names like `search`, `get`, `update` that could conflict
+- Include version suffixes if you need multiple variants (e.g., `translate_v1`, `translate_v2`)
+
+## 🔄 Usage in LLM with Tools
+
+```
+User Query
+    ↓
+[Tools RAG Pre-Filter]  ← 10-50ms, reduces 100 → 10 tools
+    ↓
+[LLM Tool Selection]    ← 200-500ms, picks 1-3 tools
+    ↓
+[Tool Execution]
+    ↓
+Response
+```
+
 ## 🚀 Quick Start
 
-### Installation
+### Common Commands
 
-Using uv (recommended):
+This project uses a Makefile to simplify common operations throughout the codebase. All commands referenced in this documentation are available via make:
 
 ```bash
 # Install dependencies
 make install
 
-# Or manually with uv
-uv sync --all-extras
+# Run the evaluation suite
+make run
+
+# Run unit tests
+make test
+
+# Run tests with coverage
+make test-coverage
+
+# Run linter
+make lint
+
+# Format code
+make format
+
+# Clean up cache files
+make clean
+
+# See all available commands
+make help
 ```
 
-Using pip:
+### Installation
 
 ```bash
-pip install -e .
+make install
 ```
 
-### Basic Usage (Library Mode)
+### Basic Usage
 
 ```python
 from tools_rag.hybrid_tools_rag import ToolsRAG
@@ -62,9 +130,125 @@ relevant_tools = rag.retrieve_hybrid(query)
 # Returns: [{"name": "get_weather", "desc": ..., "params": ...}, ...]
 ```
 
+## 🛠️ CRUD Operations
+
+In production environments, your tool catalog evolves—new tools are added, existing tools are updated with better descriptions, and deprecated tools are removed. CRUD operations allow you to manage these changes dynamically without application restart. 
+
+### Add Tools
+
+Add new tools or update existing ones (upsert behavior). If a tool with the same name already exists, it will be updated; otherwise, it will be added to the catalog.
+
+```python
+# Add new tools
+new_tools = [
+    {"name": "send_email", "desc": "Send an email", "params": {...}},
+    {"name": "get_calendar", "desc": "Get calendar events", "params": {...}}
+]
+rag.add_tools(new_tools)
+```
+
+### Remove Tools
+
+Remove tools from the catalog by their names. The tools will be deleted from ChromaDB and the BM25 index will be rebuilt.
+
+```python
+# Remove tools by name
+rag.remove_tools(["old_tool_1", "old_tool_2"])
+```
+
+**Note:** To completely repopulate your tool catalog, use `remove_tools()` to clear existing tools, then `add_tools()` to add the new set.
+
+## 🔧 Configuration
+
+The implementation is fully configurable using the `ToolsRAGConfig` Pydantic class, allowing you to tune the embedding model, retrieval weights, result filtering, and more.
+
+```python
+class ToolsRAGConfig:
+    embed_model: str = "sentence-transformers/all-mpnet-base-v2"
+    alpha: float = 0.8          # Dense vs sparse weight (0.0-1.0)
+    top_k: int = 10             # Number of tools to return
+    threshold: float = 0.01     # Minimum similarity score
+    filter_tools: bool = True   # Enable/disable filtering
+```
+
+### Parameter Tuning
+
+- **`alpha`**: Higher = more semantic, lower = more keyword-based
+  - `0.8` (default) works well for natural language queries
+  - `0.5` for mixed semantic/keyword queries
+  - `0.2` for technical/exact term matching
+
+- **`top_k`**: Number of tools to return
+  - `10` (default) balances coverage and LLM context
+  - Increase for complex multi-tool tasks
+  - Decrease for simpler use cases
+
+- **`threshold`**: Minimum similarity score
+  - `0.01` (default) lets LLM handle borderline cases
+  - Increase to filter more aggressively
+
+- **`filter_tools`**: Enable/disable RAG filtering
+  - `True` (default) - Returns top-K filtered tools
+  - `False` - Returns **all tools** (no filtering, no ChromaDB query)
+  - Use `False` to bypass RAG and let LLM see all tools (useful for A/B testing or debugging)
+
+## 🧪 Testing
+
+The project includes comprehensive unit tests and an evaluation suite to measure retrieval quality.
+
+### Unit Tests
+
+Run unit tests with pytest:
+
+```bash
+# Run all tests
+pytest tools_rag/tests/ -v
+
+# Run with coverage
+pytest tools_rag/tests/ --cov=tools_rag --cov-report=html
+
+# Run specific test file
+pytest tools_rag/tests/test_tools_rag.py -v
+```
+
+**Test Coverage:**
+- ✅ **Config validation** - 5 tests (100% coverage)
+- ✅ **ChromaStore operations** - 4 tests (100% coverage)  
+- ✅ **ToolsRAG functionality** - 13 tests (85% coverage)
+- ✅ **22 tests total**, all passing
+
+### 📊 Performance
+**Evaluation Output includes:**
+- Hit rate metrics
+- Average rank when found
+- Detailed per-query results
+- Negative case handling
+
+Tested on 123 queries across 100 tools:
+
+| Metric | Value |
+|--------|-------|
+| **Top-10 Hit Rate** | 100% (118/118) |
+| **Average Rank** | 1.35 |
+| **Retrieval Time** | 10-50ms |
+| **Memory Footprint** | ~450MB (model + indices) |
+
+### 📈 Optimization History
+
+The current 100% hit rate was achieved through iterative improvements to the retrieval algorithm, embedding model selection, and tool descriptions:
+
+| Optimization | Hit Rate | Notes |
+|--------------|----------|-------|
+| Dense only | 75% | Baseline |
+| + BM25 fusion (α=0.5) | 80% | Better keyword matching |
+| + Rank-based scoring | 85% | More stable |
+| + Better embeddings | 96.5% | all-mpnet-base-v2 |
+| + Optimized descriptions | 99.1% | Removed params from text |
+| + Tool expansion (100) | 100% | Current state |
+
 ## 🦙 Integration with Llama Stack
 
-### Pre-Filter Pattern (Recommended)
+### Implementation
 
 Use Tools RAG as a **pre-processing step** before LLM inference to reduce context size:
 
@@ -116,275 +300,7 @@ def process_request(user_query: str):
 - ✅ **Better accuracy** - LLM focuses on relevant tools only
 - ✅ **No extra turn** - RAG runs during same request
 
-### Architecture
-
-```
-User Query
-    ↓
-[Tools RAG Pre-Filter]  ← 10-50ms, reduces 100 → 10 tools
-    ↓
-[LLM Tool Selection]    ← 200-500ms, picks 1-3 tools
-    ↓
-[Tool Execution]
-    ↓
-Response
-```
-
-## 📊 Performance
-
-Tested on 123 queries across 100 tools:
-
-| Metric | Value |
-|--------|-------|
-| **Top-10 Hit Rate** | 100% (118/118) |
-| **Average Rank** | 1.35 |
-| **Retrieval Time** | 10-50ms |
-| **Memory Footprint** | ~450MB (model + indices) |
-
-## 🔧 Configuration
-
-```python
-class ToolsRAGConfig:
-    embed_model: str = "sentence-transformers/all-mpnet-base-v2"
-    alpha: float = 0.8          # Dense vs sparse weight (0.0-1.0)
-    top_k: int = 10             # Number of tools to return
-    threshold: float = 0.01     # Minimum similarity score
-    filter_tools: bool = True   # Enable/disable filtering
-```
-
-### Parameter Tuning
-
-- **`alpha`**: Higher = more semantic, lower = more keyword-based
-  - `0.8` (default) works well for natural language queries
-  - `0.5` for mixed semantic/keyword queries
-  - `0.2` for technical/exact term matching
-
-- **`top_k`**: Number of tools to return
-  - `10` (default) balances coverage and LLM context
-  - Increase for complex multi-tool tasks
-  - Decrease for simpler use cases
-
-- **`threshold`**: Minimum similarity score
-  - `0.01` (default) lets LLM handle borderline cases
-  - Increase to filter more aggressively
-
-- **`filter_tools`**: Enable/disable RAG filtering
-  - `True` (default) - Returns top-K filtered tools
-  - `False` - Returns **all tools** (no filtering, no ChromaDB query)
-  - Use `False` to bypass RAG and let LLM see all tools (useful for A/B testing or debugging)
-
-### Example: A/B Testing RAG vs No RAG
-
-```python
-# Test with RAG filtering
-config_with_rag = ToolsRAGConfig(filter_tools=True, top_k=10)
-rag = ToolsRAG(config_with_rag)
-rag.populate_tools(tools)
-filtered = rag.retrieve_hybrid("What's the weather?")
-print(f"With RAG: {len(filtered)} tools")  # Returns 10 tools
-
-# Test without RAG filtering (all tools)
-config_no_rag = ToolsRAGConfig(filter_tools=False)
-rag_no_filter = ToolsRAG(config_no_rag)
-rag_no_filter.populate_tools(tools)
-all_tools = rag_no_filter.retrieve_hybrid("What's the weather?")
-print(f"Without RAG: {len(all_tools)} tools")  # Returns 100 tools
-```
-
-## 🛠️ CRUD Operations
-
-### Add Tools Dynamically
-
-```python
-# Add new tools without rebuilding from scratch
-new_tools = [
-    {"name": "send_email", "desc": "Send an email", "params": {...}},
-    {"name": "get_calendar", "desc": "Get calendar events", "params": {...}}
-]
-rag.add_tools(new_tools)
-```
-
-### Remove Tools
-
-```python
-# Remove tools by name
-rag.remove_tools(["old_tool_1", "old_tool_2"])
-```
-
-### Update Tools
-
-```python
-# Update = add with same name (upsert)
-updated_tool = {
-    "name": "get_weather",
-    "desc": "Get current weather with extended forecast",
-    "params": {...}
-}
-rag.add_tools([updated_tool])
-```
-
-## 📁 Project Structure
-
-```
-Tools-RAG/
-├── main.py                    # Entry point for evaluation
-├── tools_rag/                 # Core library
-│   ├── __init__.py               # Package exports
-│   ├── hybrid_tools_rag.py       # Main ToolsRAG class
-│   ├── store.py                  # ChromaDB wrapper
-│   ├── config.py                 # Pydantic configuration
-│   ├── tools.py                  # Tool definitions (100 tools)
-│   ├── questions.py              # Test questions (120 queries)
-│   ├── evaluation.py             # Evaluation utilities
-│   └── tests/                    # Unit tests
-│       ├── test_config.py           # Config tests
-│       ├── test_store.py            # Store tests
-│       └── test_tools_rag.py        # RAG tests
-├── pyproject.toml             # Project metadata & dependencies (uv)
-├── requirements.txt           # Legacy pip requirements
-├── pytest.ini                 # Pytest configuration
-├── .pylintrc                  # Pylint configuration
-├── Makefile                   # Common development tasks
-└── README.md
-```
-
-## 🔬 How It Works
-
-### Hybrid Retrieval
-
-Combines two complementary retrieval methods:
-
-1. **Dense (Semantic) Retrieval**
-   - Uses sentence-transformers embeddings
-   - Captures semantic meaning
-   - Good for natural language queries
-
-2. **Sparse (BM25) Retrieval**
-   - Keyword-based matching
-   - Exact term matching
-   - Good for technical terms
-
-3. **Fusion**
-   - `final_score = alpha × dense_score + (1 - alpha) × sparse_score`
-   - Rank-based scoring for stability
-   - Threshold filtering for quality
-
-### Why Hybrid?
-
-| Method | "What's the weather?" | "get_weather function" |
-|--------|----------------------|------------------------|
-| Dense only | ✅ Excellent | ⚠️ May miss exact match |
-| Sparse only | ⚠️ Weak semantic match | ✅ Perfect keyword match |
-| **Hybrid** | ✅ **Best of both** | ✅ **Best of both** |
-
-## 🧪 Testing
-
-### Using Makefile (Recommended)
-
-```bash
-# Run the evaluation suite
-make run
-
-# Run unit tests
-make test
-
-# Run tests with coverage
-make test-coverage
-
-# Run linter
-make lint
-
-# Format code
-make format
-
-# Clean up cache files
-make clean
-
-# See all available commands
-make help
-```
-
-### Manual Testing
-
-Run the evaluation suite:
-
-```bash
-python main.py
-# or
-make run
-```
-
-Output includes:
-- Hit rate metrics
-- Average rank when found
-- Detailed per-query results
-- Negative case handling
-
-### Unit Tests
-
-Run unit tests with pytest:
-
-```bash
-# Run all tests
-pytest tools_rag/tests/ -v
-
-# Run with coverage
-pytest tools_rag/tests/ --cov=tools_rag --cov-report=html
-
-# Run specific test file
-pytest tools_rag/tests/test_tools_rag.py -v
-```
-
-**Test Coverage:**
-- ✅ **Config validation** - 5 tests (100% coverage)
-- ✅ **ChromaStore operations** - 4 tests (100% coverage)  
-- ✅ **ToolsRAG functionality** - 13 tests (85% coverage)
-- ✅ **22 tests total**, all passing
-
-## 🏗️ Architecture Decisions
-
-### Library vs Service
-
-**Current: Library Mode** (recommended for <1000 tools)
-
-**Pros:**
-- ✅ Lowest latency (no network hop)
-- ✅ Simple deployment
-- ✅ Type-safe Python API
-
-**When to consider microservice:**
-- Multiple services need tool retrieval
-- >1000 tools (>2GB memory)
-- Frequent tool updates
-- Independent scaling needs
-
-### ChromaDB as Single Source of Truth
-
-- Tool metadata stored in ChromaDB (as JSON)
-- BM25 rebuilt from ChromaDB documents
-- No separate tool list in memory
-- CRUD operations update ChromaDB → rebuild indices
-
-### Design Principles
-
-1. **Simplicity** - Clean class-based design, minimal dependencies
-2. **Performance** - Optimized for <50ms retrieval
-3. **Accuracy** - 100% hit rate on test suite
-4. **Flexibility** - Configurable via Pydantic, supports CRUD
-5. **Production-ready** - Type hints, docstrings, error handling
-
-## 📈 Optimization History
-
-| Optimization | Hit Rate | Notes |
-|--------------|----------|-------|
-| Dense only | 75% | Baseline |
-| + BM25 fusion (α=0.5) | 80% | Better keyword matching |
-| + Rank-based scoring | 85% | More stable |
-| + Better embeddings | 96.5% | all-mpnet-base-v2 |
-| + Optimized descriptions | 99.1% | Removed params from text |
-| + Tool expansion (100) | 100% | Current state |
-
-## 🛠️ Development
+## 🤝 Contributing
 
 ### Setup Development Environment
 
@@ -417,9 +333,8 @@ make test-coverage
 - **`pytest.ini`** - Test configuration
 - **`Makefile`** - Development commands
 
-## 🤝 Contributing
+### Key Files to Understand
 
-Key files to understand:
 - `tools_rag/hybrid_tools_rag.py` - Core retrieval logic
 - `tools_rag/store.py` - Vector database abstraction
 - `tools_rag/evaluation.py` - Metrics and testing
@@ -450,4 +365,3 @@ MIT
 - [ChromaDB](https://www.trychroma.com/) - Vector database
 - [Sentence Transformers](https://www.sbert.net/) - Embedding models
 - [Rank-BM25](https://github.com/dorianbrown/rank_bm25) - BM25 implementation
-
