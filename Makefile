@@ -26,26 +26,26 @@ install:
 # Run tests
 test:
 	@echo "Running tests..."
-	pytest tools_rag/tests/ -v
+	uv run pytest tools_rag/tests/ -v
 	@echo "✓ Tests completed"
 
 # Run tests with verbose output
 test-verbose:
 	@echo "Running tests with verbose output..."
-	pytest tools_rag/tests/ -vv -s
+	uv run pytest tools_rag/tests/ -vv -s
 	@echo "✓ Tests completed"
 
 # Run tests with coverage
 test-coverage:
 	@echo "Running tests with coverage..."
-	pytest tools_rag/tests/ --cov=tools_rag/src --cov-report=term-missing --cov-report=html
+	uv run pytest tools_rag/tests/ --cov=tools_rag/src --cov-report=term-missing --cov-report=html
 	@echo "✓ Coverage report generated"
 	@echo "HTML report: htmlcov/index.html"
 
 # Run main evaluation script
 run:
 	@echo "Running Tools RAG evaluation..."
-	python main.py
+	uv run python main.py
 
 # Clean up cache and build files
 clean:
@@ -61,14 +61,12 @@ clean:
 # Run linter (optional - requires pylint)
 lint:
 	@echo "Running linter..."
-	@command -v pylint >/dev/null 2>&1 || { echo "pylint not installed. Install with: pip install pylint"; exit 1; }
-	pylint tools_rag
+	uv run pylint tools_rag
 	@echo "✓ Linting completed"
 
 # Format code (optional - requires black)
 format:
 	@echo "Formatting code..."
-	@command -v black >/dev/null 2>&1 || { echo "black not installed. Install with: pip install black"; exit 1; }
-	black tools_rag
+	uv run black tools_rag
 	@echo "✓ Formatting completed"
 

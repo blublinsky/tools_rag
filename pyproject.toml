@@ -11,6 +11,9 @@ dependencies = [
     "pydantic>=2.0.0",
 ]
 
+[tool.hatch.build.targets.wheel]
+packages = ["tools_rag"]
+
 [project.optional-dependencies]
 dev = [
     "pytest>=7.0.0",
