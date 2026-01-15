@@ -33,26 +33,31 @@ class TestToolsRAG:
                 "name": "get_weather",
                 "desc": "Get current weather conditions",
                 "params": {"location": {"type": "string"}},
+                "server": "weather-mcp",
             },
             {
                 "name": "get_forecast",
                 "desc": "Get weather forecast",
                 "params": {"location": {"type": "string"}},
+                "server": "weather-mcp",
             },
             {
                 "name": "send_email",
                 "desc": "Send an email message",
                 "params": {"to": {"type": "string"}},
+                "server": "communication-mcp",
             },
             {
                 "name": "search_wiki",
                 "desc": "Search Wikipedia articles",
                 "params": {"query": {"type": "string"}},
+                "server": "wikipedia-mcp",
             },
             {
                 "name": "calculate",
                 "desc": "Perform mathematical calculations",
                 "params": {"expression": {"type": "string"}},
+                "server": "calculator-mcp",
             },
         ]
 
@@ -95,12 +100,18 @@ class TestToolsRAG:
 
     def test_retrieve_hybrid_with_filtering(self, rag):
         """Test hybrid retrieval with filtering enabled."""
-        results = rag.retrieve_hybrid("What's the weather like?")
+        results, servers = rag.retrieve_hybrid("What's the weather like?")
 
         assert len(results) <= 3  # top_k=3
         assert len(results) > 0
         assert all(isinstance(r, dict) for r in results)
         assert all("name" in r and "desc" in r for r in results)
+        # Server field should be removed from tools
+        assert all("server" not in r for r in results)
+
+        # Should have server list
+        assert isinstance(servers, list)
+        assert len(servers) > 0
 
         # Weather-related tools should be in results
         names = [r["name"] for r in results]
@@ -112,22 +123,15 @@ class TestToolsRAG:
         rag = ToolsRAG(config)
         rag.populate_tools(sample_tools)
 
-        results = rag.retrieve_hybrid("What's the weather like?")
+        results, servers = rag.retrieve_hybrid("What's the weather like?")
 
-        # Should return all tools
-        assert len(results) == 5
-        names = {r["name"] for r in results}
-        assert names == {
-            "get_weather",
-            "get_forecast",
-            "send_email",
-            "search_wiki",
-            "calculate",
-        }
+        # Should return None to signal use all tools
+        assert results is None
+        assert servers is None
 
     def test_retrieve_with_custom_parameters(self, rag):
         """Test retrieval with custom k, alpha, threshold."""
-        results = rag.retrieve_hybrid(
+        results, servers = rag.retrieve_hybrid(
             "weather", k=2, alpha=0.5, threshold=0.0  # Override config
         )
 
@@ -136,8 +140,8 @@ class TestToolsRAG:
     def test_add_tools(self, rag):
         """Test adding new tools dynamically."""
         new_tools = [
-            {"name": "get_time", "desc": "Get current time", "params": {}},
-            {"name": "set_alarm", "desc": "Set an alarm", "params": {}},
+            {"name": "get_time", "desc": "Get current time", "params": {}, "server": "time-mcp"},
+            {"name": "set_alarm", "desc": "Set an alarm", "params": {}, "server": "time-mcp"},
         ]
 
         rag.add_tools(new_tools)
@@ -154,6 +158,7 @@ class TestToolsRAG:
             "name": "get_weather",
             "desc": "Get detailed weather with extended forecast",
             "params": {"location": {"type": "string"}},
+            "server": "weather-mcp",
         }
 
         rag.add_tools([updated_tool])
@@ -200,8 +205,9 @@ class TestToolsRAG:
         rag = ToolsRAG(config)
         # Don't populate any tools
 
-        results = rag.retrieve_hybrid("test query")
-        assert len(results) == 0
+        results, servers = rag.retrieve_hybrid("test query")
+        assert results is None
+        assert servers is None
 
     def test_high_threshold_filtering(self, sample_tools):
         """Test that high threshold filters out results."""
@@ -213,21 +219,23 @@ class TestToolsRAG:
                     "name": "unrelated_tool",
                     "desc": "Completely unrelated xyz abc",
                     "params": {},
+                    "server": "test-mcp",
                 }
             ]
         )
 
-        results = rag_strict.retrieve_hybrid("weather forecast sunny day")
+        results, servers = rag_strict.retrieve_hybrid("weather forecast sunny day")
         # Should filter out low-similarity matches
         assert len(results) == 0
+        assert len(servers) == 0
 
     def test_semantic_vs_keyword_matching(self, rag):
         """Test that hybrid retrieval combines semantic and keyword matching."""
         # Semantic query (no exact keyword match)
-        semantic_results = rag.retrieve_hybrid("What's the temperature outside?")
+        semantic_results, servers1 = rag.retrieve_hybrid("What's the temperature outside?")
         assert len(semantic_results) > 0
 
         # Keyword query (exact match)
-        keyword_results = rag.retrieve_hybrid("get_weather")
+        keyword_results, servers2 = rag.retrieve_hybrid("get_weather")
         assert len(keyword_results) > 0
         assert keyword_results[0]["name"] == "get_weather"

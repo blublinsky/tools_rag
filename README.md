@@ -118,7 +118,8 @@ tools = [
     {
         "name": "get_weather",
         "desc": "Get current weather conditions for a location",
-        "params": {"location": {"type": "string"}}
+        "params": {"location": {"type": "string"}},
+        "server": "weather-mcp"  # MCP server name
     },
     # ... more tools
 ]
@@ -126,8 +127,11 @@ rag.populate_tools(tools)
 
 # 3. Retrieve relevant tools for a query
 query = "What's the temperature outside?"
-relevant_tools = rag.retrieve_hybrid(query)
-# Returns: [{"name": "get_weather", "desc": ..., "params": ...}, ...]
+relevant_tools, servers = rag.retrieve_hybrid(query)
+# Returns:
+# - relevant_tools: [{"name": "get_weather", "desc": ..., "params": ...}, ...]
+#   (without 'server' field)
+# - servers: ["weather-mcp", ...]  # Unique server names needed
 ```
 
 ## 🛠️ CRUD Operations
@@ -141,8 +145,8 @@ Add new tools or update existing ones (upsert behavior). If a tool with the same
 ```python
 # Add new tools
 new_tools = [
-    {"name": "send_email", "desc": "Send an email", "params": {...}},
-    {"name": "get_calendar", "desc": "Get calendar events", "params": {...}}
+    {"name": "send_email", "desc": "Send an email", "params": {...}, "server": "communication-mcp"},
+    {"name": "get_calendar", "desc": "Get calendar events", "params": {...}, "server": "productivity-mcp"}
 ]
 rag.add_tools(new_tools)
 ```
@@ -188,9 +192,10 @@ class ToolsRAGConfig:
   - Increase to filter more aggressively
 
 - **`filter_tools`**: Enable/disable RAG filtering
-  - `True` (default) - Returns top-K filtered tools
-  - `False` - Returns **all tools** (no filtering, no ChromaDB query)
-  - Use `False` to bypass RAG and let LLM see all tools (useful for A/B testing or debugging)
+  - `True` (default) - Returns `(tools, servers)` with top-K filtered results
+  - `False` - Returns `(None, None)` to signal "use all tools"
+  - When `False`, avoids expensive processing - caller should use their full tool list
+  - Use for A/B testing RAG vs no-RAG, or debugging
 
 ## 🧪 Testing
 
@@ -248,6 +253,35 @@ The current 100% hit rate was achieved through iterative improvements to the ret
 
 ## 🦙 Integration with Llama Stack
 
+### MCP Server Support
+
+Tools RAG supports Model Context Protocol (MCP) servers. Each tool can specify which MCP server it belongs to:
+
+```python
+tools = [
+    {
+        "name": "get_weather",
+        "desc": "Get current weather",
+        "params": {...},
+        "server": "weather-mcp"  # MCP server identifier
+    },
+    {
+        "name": "send_email",
+        "desc": "Send email",
+        "params": {...},
+        "server": "communication-mcp"
+    }
+]
+```
+
+When retrieving tools, you get both the tools AND the list of MCP servers needed:
+
+```python
+tools, servers = rag.retrieve_hybrid("What's the weather?")
+# tools: [{"name": "get_weather", ...}]  # Clean, no 'server' field
+# servers: ["weather-mcp"]  # Unique servers for these tools
+```
+
 ### Implementation
 
 Use Tools RAG as a **pre-processing step** before LLM inference to reduce context size:
@@ -260,14 +294,19 @@ from tools_rag.config import ToolsRAGConfig
 # Initialize once at startup
 llama_client = LlamaStackClient()
 tool_rag = ToolsRAG(ToolsRAGConfig(top_k=10))
-tool_rag.populate_tools(all_100_tools)
+tool_rag.populate_tools(all_100_tools)  # Tools with 'server' field
 
 def process_request(user_query: str):
     # Step 1: RAG pre-filter (10-50ms)
     # Reduces 100 tools → 10 most relevant tools
-    relevant_tools = tool_rag.retrieve_hybrid(user_query)
+    relevant_tools, mcp_servers = tool_rag.retrieve_hybrid(user_query)
     
-    # Step 2: Format for Llama Stack
+    # Step 2: Configure MCP servers
+    # Use the server list to authorize/configure required MCP servers
+    for server in mcp_servers:
+        llama_client.ensure_mcp_server_ready(server)
+    
+    # Step 3: Format for Llama Stack
     tools_for_llm = [
         {
             "name": t["name"],
@@ -277,7 +316,7 @@ def process_request(user_query: str):
         for t in relevant_tools
     ]
     
-    # Step 3: Single LLM turn with filtered tools
+    # Step 4: Single LLM turn with filtered tools
     response = llama_client.inference.chat_completion(
         model="llama-3.1-70b",
         messages=[{"role": "user", "content": user_query}],
@@ -285,7 +324,7 @@ def process_request(user_query: str):
         stream=False
     )
     
-    # Step 4: Execute tools selected by LLM
+    # Step 5: Execute tools selected by LLM
     if response.tool_calls:
         return execute_tools(response.tool_calls)
     
@@ -299,6 +338,47 @@ def process_request(user_query: str):
 - ✅ **Lower cost** - Fewer input tokens
 - ✅ **Better accuracy** - LLM focuses on relevant tools only
 - ✅ **No extra turn** - RAG runs during same request
+
+### Alternative: Prompt-Based Tool Filtering
+
+If your Llama Stack setup doesn't support passing specific tools via the `tools` parameter, or if MCP servers expose all their tools automatically, you can use **prompt-based filtering** to instruct the LLM which tools to use:
+
+```python
+def process_request(user_query: str):
+    # Step 1: RAG retrieval
+    relevant_tools, mcp_servers = tool_rag.retrieve_hybrid(user_query, k=10)
+    
+    # Step 2: Build tool list for system prompt
+    tool_descriptions = "\n".join([
+        f"- {t['name']}: {t['desc']}" 
+        for t in relevant_tools
+    ])
+    
+    # Step 3: Inject allowed tools into system prompt
+    system_prompt = f"""You have access to the following tools:
+
+{tool_descriptions}
+
+IMPORTANT: Only use the tools listed above. Do not use any other tools that may be available."""
+    
+    # Step 4: Call LLM with instruction
+    response = llama_client.inference.chat_completion(
+        model="llama-3.1-70b",
+        messages=[
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_query}
+        ]
+        # All MCP servers are registered, but LLM instructed to use only specific tools
+    )
+    
+    return response
+```
+
+**When to use this approach:**
+- ✅ Llama Stack doesn't support per-request tool filtering
+- ✅ MCP servers automatically expose all their tools
+- ✅ You want LLM to be aware of tool restrictions
+- ⚠️ Note: Relies on LLM instruction-following (not API-enforced)
 
 ## 🤝 Contributing
 

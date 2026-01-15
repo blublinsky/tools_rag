@@ -96,7 +96,7 @@ class ToolsRAG:
         k: int | None = None,
         alpha: float | None = None,
         threshold: float | None = None,
-    ) -> list[dict]:
+    ) -> tuple[list[dict] | None, list[str] | None]:
         """Retrieve tools based on dense and sparse embeddings (hybrid).
 
         Args:
@@ -106,14 +106,19 @@ class ToolsRAG:
             threshold: Minimum similarity threshold (uses config.threshold if None)
 
         Returns:
-            List of tool dictionaries filtered by threshold (or all tools if filter_tools=False)
+            Tuple of (tools, servers) where:
+            - tools: List of tool dictionaries (without 'server' field), or None if filter_tools=False
+            - servers: List of unique MCP server names needed for these tools, or None if filter_tools=False
+            
+            When filter_tools=False, returns (None, None) to signal caller should use all tools.
         """
-        # If filtering disabled, return all tools
+        # Initialize result containers
+        tools_clean = []
+        servers_set = set()
+        
+        # If filtering disabled, return None to signal caller should use all tools
         if not self.config.filter_tools:
-            all_data = self.store.get_all()
-            if not all_data["metadatas"]:
-                return []
-            return [json.loads(meta["tool_json"]) for meta in all_data["metadatas"]]
+            return (None, None)
 
         # Use config defaults if not specified
         k = k if k is not None else self.config.top_k
@@ -148,20 +153,18 @@ class ToolsRAG:
             fused[t] = alpha * d + (1 - alpha) * s
         final = sorted(fused, key=fused.get, reverse=True)[:k]
 
-        # Filter by threshold using actual similarity scores
-        # Only tools from dense results have similarity scores; BM25-only tools get 0.0
-        filtered_results = []
+        # Filter by threshold and extract servers in one pass
         for name in final:
             sim = similarity_lookup.get(name, 0.0)
             if sim >= threshold and name in metadata_lookup:
-                # Tool passed threshold and has metadata (from dense search)
-                filtered_results.append(metadata_lookup[name])
-            elif sim >= threshold:
-                # Tool passed threshold but no metadata yet - shouldn't happen since
-                # threshold filtering only applies to dense results, but handle gracefully
-                pass
+                tool = metadata_lookup[name]
+                # Extract and remove server field
+                server = tool.pop("server", None)
+                if server:
+                    servers_set.add(server)
+                tools_clean.append(tool)
 
-        return filtered_results
+        return (tools_clean, sorted(servers_set))
 
     def _build_text(self, t: dict) -> str:
         """Build text representation: name + desc only (best performance: 99.1% hit rate)."""

@@ -77,7 +77,13 @@ def evaluate_rag(
 
     for i, (question, expected_tool) in enumerate(test_questions, 1):
         # Retrieve tools using hybrid search
-        hybrid_ranked = rag.retrieve_hybrid(question)
+        hybrid_ranked, servers = rag.retrieve_hybrid(question)
+        
+        # Handle case where filtering is disabled (returns None)
+        if hybrid_ranked is None:
+            from tools_rag.tools import tools
+            hybrid_ranked = tools
+        
         hybrid_names = [t["name"] for t in hybrid_ranked]
 
         # Calculate rank of expected tool in results
