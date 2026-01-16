@@ -96,6 +96,7 @@ class ToolsRAG:
         k: int | None = None,
         alpha: float | None = None,
         threshold: float | None = None,
+        exclude_servers: list[str] | None = None,
     ) -> tuple[list[dict] | None, list[str] | None]:
         """Retrieve tools based on dense and sparse embeddings (hybrid).
 
@@ -104,6 +105,7 @@ class ToolsRAG:
             k: Number of tools to retrieve (uses config.top_k if None)
             alpha: Weight for dense vs sparse (uses config.alpha if None)
             threshold: Minimum similarity threshold (uses config.threshold if None)
+            exclude_servers: List of MCP server names to exclude from results
 
         Returns:
             Tuple of (tools, servers) where:
@@ -115,7 +117,7 @@ class ToolsRAG:
         # Initialize result containers
         tools_clean = []
         servers_set = set()
-        
+
         # If filtering disabled, return None to signal caller should use all tools
         if not self.config.filter_tools:
             return (None, None)
@@ -154,12 +156,19 @@ class ToolsRAG:
         final = sorted(fused, key=fused.get, reverse=True)[:k]
 
         # Filter by threshold and extract servers in one pass
+        exclude_set = set(exclude_servers) if exclude_servers else set()
+
         for name in final:
             sim = similarity_lookup.get(name, 0.0)
             if sim >= threshold and name in metadata_lookup:
                 tool = metadata_lookup[name]
                 # Extract and remove server field
                 server = tool.pop("server", None)
+
+                # Skip if server is excluded
+                if server and server in exclude_set:
+                    continue
+
                 if server:
                     servers_set.add(server)
                 tools_clean.append(tool)

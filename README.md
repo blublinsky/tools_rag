@@ -380,6 +380,197 @@ IMPORTANT: Only use the tools listed above. Do not use any other tools that may 
 - ✅ You want LLM to be aware of tool restrictions
 - ⚠️ Note: Relies on LLM instruction-following (not API-enforced)
 
+## 🦜 Integration with LangChain
+
+LangChain has native support for passing specific tools to agents, making it ideal for Tools RAG integration.
+
+### Architecture: Lazy Population with Server Exclusion
+
+**Key Concepts:**
+1. **System-level MCP servers** - Always accessible (e.g., weather, wikipedia)
+2. **User-level MCP servers** - Require user auth tokens (e.g., Gmail, Calendar)
+3. **Lazy population** - Tools loaded on first request
+4. **Server exclusion** - Filter out unauthorized servers per request
+
+### Implementation
+
+```python
+from langchain_openai import ChatOpenAI
+from langchain.agents import AgentExecutor, create_openai_tools_agent
+from langchain.tools import Tool
+from langchain.prompts import ChatPromptTemplate, MessagesPlaceholder
+from tools_rag.hybrid_tools_rag import ToolsRAG
+from tools_rag.config import ToolsRAGConfig
+
+# Global RAG instance
+tool_rag = ToolsRAG(ToolsRAGConfig(top_k=10))
+TOOLS_POPULATED = False
+
+# MCP server configuration
+MCP_CONFIG = {
+    "weather-mcp": {"url": "...", "auth_type": "system"},
+    "wikipedia-mcp": {"url": "...", "auth_type": "system"},
+    "gmail-mcp": {"url": "...", "auth_type": "user"},
+    "calendar-mcp": {"url": "...", "auth_type": "user"},
+}
+
+# System-level auth (headers from environment/config)
+SYSTEM_AUTH = {
+    "weather-mcp": {"Authorization": "Bearer <system-token>", "X-API-Key": "..."},
+    "wikipedia-mcp": {"Authorization": "Bearer <system-token>"},
+}
+
+llm = ChatOpenAI(model="gpt-4", temperature=0)
+
+def process_request(user_query: str, user_tokens: dict = None):
+    global TOOLS_POPULATED
+    
+    # Step 1: Lazy populate on first request
+    if not TOOLS_POPULATED:
+        all_tools = []
+        
+        # Fetch from all known MCP servers (system + user)
+        for server_name, config in MCP_CONFIG.items():
+            try:
+                if config["auth_type"] == "system":
+                    auth = SYSTEM_AUTH[server_name]
+                elif config["auth_type"] == "user" and user_tokens and server_name in user_tokens:
+                    auth = user_tokens[server_name]
+                else:
+                    continue  # Skip user servers if no token
+                
+                server_tools = mcp_list_tools(config["url"], auth)
+                all_tools.extend(server_tools)
+            except Exception as e:
+                print(f"Failed to load tools from {server_name}: {e}")
+        
+        tool_rag.populate_tools(all_tools)
+        TOOLS_POPULATED = True
+    
+    # Step 2: Determine which servers to exclude
+    exclude_servers = []
+    for server_name, config in MCP_CONFIG.items():
+        if config["auth_type"] == "user":
+            if not user_tokens or server_name not in user_tokens:
+                exclude_servers.append(server_name)
+    
+    # Step 3: RAG retrieval with server exclusion
+    relevant_tools, mcp_servers = tool_rag.retrieve_hybrid(
+        user_query,
+        k=10,
+        exclude_servers=exclude_servers  # Filter unauthorized servers
+    )
+    
+    # Step 4: Build MCP server configs for tool execution
+    mcp_server_configs = {}
+    for server_name in mcp_servers:
+        config = MCP_CONFIG[server_name]
+        
+        # Get appropriate auth
+        if config["auth_type"] == "system":
+            auth = SYSTEM_AUTH[server_name]
+        else:  # user-level
+            auth = user_tokens.get(server_name) if user_tokens else None
+            if not auth:
+                continue  # Skip if no auth available
+        
+        mcp_server_configs[server_name] = {
+            "url": config["url"],
+            "auth": auth
+        }
+    
+    # Step 5: Create LangChain tools dynamically
+    langchain_tools = []
+    for tool in relevant_tools:
+        server_name = tool.get("server")
+        if server_name not in mcp_server_configs:
+            continue
+        
+        server_config = mcp_server_configs[server_name]
+        
+        # Wrapper function with proper closure
+        def make_tool_func(url, auth, tool_name):
+            def tool_func(**kwargs):
+                return mcp_call_tool(url, tool_name, kwargs, auth)
+            return tool_func
+        
+        langchain_tool = Tool(
+            name=tool["name"],
+            func=make_tool_func(server_config["url"], server_config["auth"], tool["name"]),
+            description=tool["desc"]
+        )
+        langchain_tools.append(langchain_tool)
+    
+    # Step 6: Create and run agent
+    prompt = ChatPromptTemplate.from_messages([
+        ("system", "You are a helpful assistant. Use the provided tools to answer questions."),
+        ("user", "{input}"),
+        MessagesPlaceholder(variable_name="agent_scratchpad"),
+    ])
+    
+    agent = create_openai_tools_agent(llm, langchain_tools, prompt)
+    agent_executor = AgentExecutor(agent=agent, tools=langchain_tools)
+    
+    result = agent_executor.invoke({"input": user_query})
+    return result["output"]
+```
+
+### Example MCP Helper Functions
+
+```python
+import requests
+
+def mcp_list_tools(url: str, auth: dict = None, timeout: int = 30) -> list[dict]:
+    """Get list of available tools from MCP server."""
+    response = requests.get(
+        f"{url}/tools",
+        headers=auth or {},
+        timeout=timeout
+    )
+    response.raise_for_status()
+    return response.json()["tools"]
+
+def mcp_call_tool(url: str, tool_name: str, parameters: dict, auth: dict = None, timeout: int = 30) -> str:
+    """Call a tool on the MCP server."""
+    response = requests.post(
+        f"{url}/tools/{tool_name}",
+        json=parameters,
+        headers=auth or {},
+        timeout=timeout
+    )
+    response.raise_for_status()
+    return response.json()["result"]
+```
+
+### Benefits
+
+- ✅ **Lazy loading** - Tools populated on first request (not at startup)
+- ✅ **Server-level exclusion** - Filter unauthorized servers efficiently
+- ✅ **Flexible auth** - System-level and user-level MCP servers
+- ✅ **No state tracking** - Tools stay in RAG, exclusion at query time
+- ✅ **Dynamic connections** - Only connect to servers needed for query
+
+### Example Usage
+
+```python
+# Request from user without Gmail access
+response = process_request(
+    "What's the weather in Paris?",
+    user_tokens={"calendar-mcp": {"Authorization": "Bearer user-calendar-token"}}
+)
+# Works: weather is system-level, Gmail tools excluded
+
+# Request from user with Gmail access
+response = process_request(
+    "Send an email to John",
+    user_tokens={
+        "gmail-mcp": {"Authorization": "Bearer user-gmail-token"},
+        "calendar-mcp": {"Authorization": "Bearer user-calendar-token"}
+    }
+)
+# Works: Gmail tools included since user provided token
+```
+
 ## 🤝 Contributing
 
 ### Setup Development Environment

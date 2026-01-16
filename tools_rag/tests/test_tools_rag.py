@@ -1,5 +1,7 @@
 """Tests for ToolsRAG system."""
 
+import chromadb
+from chromadb.errors import NotFoundError
 import pytest
 from tools_rag.hybrid_tools_rag import ToolsRAG
 from tools_rag.config import ToolsRAGConfig
@@ -11,18 +13,17 @@ class TestToolsRAG:
     @pytest.fixture(autouse=True)
     def cleanup_chroma(self):
         """Clean up ChromaDB before each test."""
-        import chromadb
 
         client = chromadb.Client()
         try:
             client.delete_collection("tools")
-        except:
+        except (ValueError, NotFoundError):
             pass
         yield
         # Cleanup after test
         try:
             client.delete_collection("tools")
-        except:
+        except (ValueError, NotFoundError):
             pass
 
     @pytest.fixture
@@ -131,7 +132,7 @@ class TestToolsRAG:
 
     def test_retrieve_with_custom_parameters(self, rag):
         """Test retrieval with custom k, alpha, threshold."""
-        results, servers = rag.retrieve_hybrid(
+        results, _servers = rag.retrieve_hybrid(
             "weather", k=2, alpha=0.5, threshold=0.0  # Override config
         )
 
@@ -184,7 +185,7 @@ class TestToolsRAG:
             "desc": "Test description",
             "params": {"arg": {"type": "string"}},
         }
-        text = rag._build_text(tool)
+        text = rag._build_text(tool)  # pylint: disable=protected-access
 
         assert "test_tool" in text
         assert "Test description" in text
@@ -193,7 +194,7 @@ class TestToolsRAG:
 
     def test_retrieve_sparse_scores(self, rag):
         """Test BM25 sparse scoring."""
-        scores = rag._retrieve_sparse_scores("weather forecast")
+        scores = rag._retrieve_sparse_scores("weather forecast")  # pylint: disable=protected-access
 
         assert isinstance(scores, dict)
         assert len(scores) > 0
@@ -209,7 +210,7 @@ class TestToolsRAG:
         assert results is None
         assert servers is None
 
-    def test_high_threshold_filtering(self, sample_tools):
+    def test_high_threshold_filtering(self):
         """Test that high threshold filters out results."""
         config = ToolsRAGConfig(top_k=10, threshold=0.99)  # Very high threshold
         rag_strict = ToolsRAG(config)
@@ -232,10 +233,28 @@ class TestToolsRAG:
     def test_semantic_vs_keyword_matching(self, rag):
         """Test that hybrid retrieval combines semantic and keyword matching."""
         # Semantic query (no exact keyword match)
-        semantic_results, servers1 = rag.retrieve_hybrid("What's the temperature outside?")
+        semantic_results, _servers1 = rag.retrieve_hybrid("What's the temperature outside?")
         assert len(semantic_results) > 0
 
         # Keyword query (exact match)
-        keyword_results, servers2 = rag.retrieve_hybrid("get_weather")
+        keyword_results, _servers2 = rag.retrieve_hybrid("get_weather")
         assert len(keyword_results) > 0
         assert keyword_results[0]["name"] == "get_weather"
+
+    def test_exclude_servers(self, rag):
+        """Test that exclude_servers parameter filters out tools from specific servers."""
+        # Query that would normally return weather tools
+        results_all, servers_all = rag.retrieve_hybrid("What's the weather?")
+        assert len(results_all) > 0
+        assert "weather-mcp" in servers_all
+
+        # Same query but exclude weather-mcp server
+        results_filtered, servers_filtered = rag.retrieve_hybrid(
+            "What's the weather?",
+            exclude_servers=["weather-mcp"]
+        )
+
+        # Should not return any weather tools
+        assert "weather-mcp" not in servers_filtered
+        weather_tools = [t for t in results_filtered if "weather" in t["name"].lower()]
+        assert len(weather_tools) == 0
