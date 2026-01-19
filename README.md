@@ -18,7 +18,7 @@ Tools-RAG offers two complementary approaches to tool selection:
 ### 1. Hybrid RAG (Recommended) - Fast & Accurate
 
 Combines dense (semantic) and sparse (BM25) retrieval for intelligent tool filtering:
-- ⚡ **38ms latency** per query
+- ⚡ **37ms latency** per query
 - 💰 **$0 cost** (local embeddings)
 - ✅ **100% hit rate** on 118 test queries
 - 🎯 **Best for production** with 100-1000s of tools
@@ -227,12 +227,11 @@ tools = [
 ]
 ```
 
-When retrieving tools, you get both the tools AND the list of MCP servers needed:
+When retrieving tools, you get a dictionary mapping server names to tool lists:
 
 ```python
-tools, servers = rag.retrieve_hybrid("What's the weather?")
-# tools: [{"name": "get_weather", ...}]  # Clean, no 'server' field
-# servers: ["weather-mcp"]  # Unique servers for these tools
+server_tools = rag.retrieve_hybrid("What's the weather?")
+# Returns: {"weather-mcp": [{"name": "get_weather", "desc": ..., "params": ...}]}
 ```
 
 ### Implementation
@@ -252,9 +251,13 @@ tool_rag.populate_tools(all_100_tools)  # Tools with 'server' field
 def process_request(user_query: str):
     # Step 1: RAG pre-filter (10-50ms)
     # Reduces 100 tools → 10 most relevant tools
-    relevant_tools, mcp_servers = tool_rag.retrieve_hybrid(user_query)
+    server_tools = tool_rag.retrieve_hybrid(user_query)
     
-    # Step 2: Configure MCP servers
+    # Step 2: Extract servers and flatten tools
+    mcp_servers = list(server_tools.keys())
+    relevant_tools = [tool for tools_list in server_tools.values() for tool in tools_list]
+    
+    # Step 3: Configure MCP servers
     # Use the server list to authorize/configure required MCP servers
     for server in mcp_servers:
         llama_client.ensure_mcp_server_ready(server)
@@ -299,7 +302,8 @@ If your Llama Stack setup doesn't support passing specific tools via the `tools`
 ```python
 def process_request(user_query: str):
     # Step 1: RAG retrieval
-    relevant_tools, mcp_servers = tool_rag.retrieve_hybrid(user_query, k=10)
+    server_tools = tool_rag.retrieve_hybrid(user_query, k=10)
+    relevant_tools = [tool for tools_list in server_tools.values() for tool in tools_list]
     
     # Step 2: Build tool list for system prompt
     tool_descriptions = "\n".join([
