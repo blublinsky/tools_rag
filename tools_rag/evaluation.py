@@ -76,13 +76,16 @@ def evaluate_rag(
     results: list[EvaluationResult] = []
 
     for i, (question, expected_tool) in enumerate(test_questions, 1):
-        # Retrieve tools using hybrid search
-        hybrid_ranked, servers = rag.retrieve_hybrid(question)
+        # Retrieve tools using hybrid search (returns dict[server: tools] or None)
+        server_tools = rag.retrieve_hybrid(question)
         
         # Handle case where filtering is disabled (returns None)
-        if hybrid_ranked is None:
+        if server_tools is None:
             from tools_rag.tools import tools
             hybrid_ranked = tools
+        else:
+            # Flatten dict of server->tools to single list
+            hybrid_ranked = [tool for tools_list in server_tools.values() for tool in tools_list]
         
         hybrid_names = [t["name"] for t in hybrid_ranked]
 

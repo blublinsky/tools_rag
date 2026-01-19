@@ -395,8 +395,7 @@ LangChain has native support for passing specific tools to agents, making it ide
 ### Implementation
 
 ```python
-from langchain_openai import ChatOpenAI
-from langchain.agents import AgentExecutor, create_openai_tools_agent
+from langchain.agents import AgentExecutor, create_tool_calling_agent
 from langchain.tools import Tool
 from langchain.prompts import ChatPromptTemplate, MessagesPlaceholder
 from tools_rag.hybrid_tools_rag import ToolsRAG
@@ -420,6 +419,21 @@ SYSTEM_AUTH = {
     "wikipedia-mcp": {"Authorization": "Bearer <system-token>"},
 }
 
+# Initialize your LLM of choice (examples)
+# Option 1: OpenAI
+# from langchain_openai import ChatOpenAI
+# llm = ChatOpenAI(model="gpt-4", temperature=0)
+
+# Option 2: Anthropic Claude
+# from langchain_anthropic import ChatAnthropic
+# llm = ChatAnthropic(model="claude-3-5-sonnet-20241022", temperature=0)
+
+# Option 3: Local Llama via Ollama
+# from langchain_ollama import ChatOllama
+# llm = ChatOllama(model="llama3.1", temperature=0)
+
+# Option 4: Any other LangChain-compatible LLM
+from langchain_openai import ChatOpenAI  # Replace with your choice
 llm = ChatOpenAI(model="gpt-4", temperature=0)
 
 def process_request(user_query: str, user_tokens: dict = None):
@@ -447,24 +461,32 @@ def process_request(user_query: str, user_tokens: dict = None):
         tool_rag.populate_tools(all_tools)
         TOOLS_POPULATED = True
     
-    # Step 2: Determine which servers to exclude
-    exclude_servers = []
-    for server_name, config in MCP_CONFIG.items():
-        if config["auth_type"] == "user":
-            if not user_tokens or server_name not in user_tokens:
-                exclude_servers.append(server_name)
+    # Dynamically add tools from MCP servers with auth headers in this request
+    if user_tokens:
+        new_tools = []
+        for server_name, auth in user_tokens.items():
+            if server_name in MCP_CONFIG:
+                config = MCP_CONFIG[server_name]
+                try:
+                    server_tools = mcp_list_tools(config["url"], auth)
+                    new_tools.extend(server_tools)
+                except Exception as e:
+                    print(f"Failed to load tools from {server_name}: {e}")
+        
+        if new_tools:
+            tool_rag.add_tools(new_tools)  # Upsert: updates existing or adds new
     
-    # Step 3: RAG retrieval with server exclusion
-    relevant_tools, mcp_servers = tool_rag.retrieve_hybrid(
-        user_query,
-        k=10,
-        exclude_servers=exclude_servers  # Filter unauthorized servers
-    )
+    # Step 2: RAG retrieval - returns dict[server: tools]
+    server_tools = tool_rag.retrieve_hybrid(user_query, k=10)
     
-    # Step 4: Build MCP server configs for tool execution
+    # Step 2: Filter by authorized servers and build MCP configs
+    authorized_server_tools = {}
     mcp_server_configs = {}
-    for server_name in mcp_servers:
-        config = MCP_CONFIG[server_name]
+    
+    for server_name, tools in server_tools.items():
+        config = MCP_CONFIG.get(server_name)
+        if not config:
+            continue
         
         # Get appropriate auth
         if config["auth_type"] == "system":
@@ -474,46 +496,50 @@ def process_request(user_query: str, user_tokens: dict = None):
             if not auth:
                 continue  # Skip if no auth available
         
+        # Server is authorized, keep its tools
+        authorized_server_tools[server_name] = tools
         mcp_server_configs[server_name] = {
             "url": config["url"],
             "auth": auth
         }
     
-    # Step 5: Create LangChain tools dynamically
+    # Flatten tools for LangChain
+    relevant_tools = [tool for tools_list in authorized_server_tools.values() for tool in tools_list]
+    
+    # Step 4: Create LangChain tools dynamically
     langchain_tools = []
-    for tool in relevant_tools:
-        server_name = tool.get("server")
-        if server_name not in mcp_server_configs:
-            continue
-        
+    for server_name, tools in authorized_server_tools.items():
         server_config = mcp_server_configs[server_name]
         
-        # Wrapper function with proper closure
-        def make_tool_func(url, auth, tool_name):
-            def tool_func(**kwargs):
-                return mcp_call_tool(url, tool_name, kwargs, auth)
-            return tool_func
-        
-        langchain_tool = Tool(
-            name=tool["name"],
-            func=make_tool_func(server_config["url"], server_config["auth"], tool["name"]),
-            description=tool["desc"]
-        )
-        langchain_tools.append(langchain_tool)
+        for tool in tools:
+            # Wrapper function with proper closure
+            def make_tool_func(url, auth, tool_name):
+                def tool_func(**kwargs):
+                    return mcp_call_tool(url, tool_name, kwargs, auth)
+                return tool_func
+            
+            langchain_tool = Tool(
+                name=tool["name"],
+                func=make_tool_func(server_config["url"], server_config["auth"], tool["name"]),
+                description=tool["desc"]
+            )
+            langchain_tools.append(langchain_tool)
     
-    # Step 6: Create and run agent
+    # Step 5: Create and run agent (works with any LLM that supports tool calling)
     prompt = ChatPromptTemplate.from_messages([
         ("system", "You are a helpful assistant. Use the provided tools to answer questions."),
         ("user", "{input}"),
         MessagesPlaceholder(variable_name="agent_scratchpad"),
     ])
     
-    agent = create_openai_tools_agent(llm, langchain_tools, prompt)
+    agent = create_tool_calling_agent(llm, langchain_tools, prompt)
     agent_executor = AgentExecutor(agent=agent, tools=langchain_tools)
     
     result = agent_executor.invoke({"input": user_query})
     return result["output"]
 ```
+
+**Note**: `create_tool_calling_agent` works with any LangChain LLM that supports tool/function calling (OpenAI, Anthropic Claude, Llama 3.1+, etc.). The LLM automatically formats tool calls according to its native format.
 
 ### Example MCP Helper Functions
 

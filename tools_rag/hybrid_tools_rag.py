@@ -96,31 +96,22 @@ class ToolsRAG:
         k: int | None = None,
         alpha: float | None = None,
         threshold: float | None = None,
-        exclude_servers: list[str] | None = None,
-    ) -> tuple[list[dict] | None, list[str] | None]:
-        """Retrieve tools based on dense and sparse embeddings (hybrid).
+    ) -> dict[str, list[dict]] | None:
+        """Retrieve tools using hybrid (dense + sparse) search with RRF.
 
         Args:
-            query: The query string to search for
-            k: Number of tools to retrieve (uses config.top_k if None)
-            alpha: Weight for dense vs sparse (uses config.alpha if None)
-            threshold: Minimum similarity threshold (uses config.threshold if None)
-            exclude_servers: List of MCP server names to exclude from results
+            query: The search query describing what tools are needed
+            k: Number of results to return (default from config)
+            alpha: Weight for dense vs sparse (1.0=dense only, 0.0=sparse only)
+            threshold: Minimum similarity score (default from config)
 
         Returns:
-            Tuple of (tools, servers) where:
-            - tools: List of tool dictionaries (without 'server' field), or None if filter_tools=False
-            - servers: List of unique MCP server names needed for these tools, or None if filter_tools=False
-            
-            When filter_tools=False, returns (None, None) to signal caller should use all tools.
+            Dictionary mapping server names to lists of tools (without 'server' field)
+            Returns None if filter_tools=False (signal to use all tools)
         """
-        # Initialize result containers
-        tools_clean = []
-        servers_set = set()
-
         # If filtering disabled, return None to signal caller should use all tools
         if not self.config.filter_tools:
-            return (None, None)
+            return None
 
         # Use config defaults if not specified
         k = k if k is not None else self.config.top_k
@@ -155,8 +146,8 @@ class ToolsRAG:
             fused[t] = alpha * d + (1 - alpha) * s
         final = sorted(fused, key=fused.get, reverse=True)[:k]
 
-        # Filter by threshold and extract servers in one pass
-        exclude_set = set(exclude_servers) if exclude_servers else set()
+        # Group tools by server
+        server_tools = {}
 
         for name in final:
             sim = similarity_lookup.get(name, 0.0)
@@ -165,15 +156,12 @@ class ToolsRAG:
                 # Extract and remove server field
                 server = tool.pop("server", None)
 
-                # Skip if server is excluded
-                if server and server in exclude_set:
-                    continue
-
                 if server:
-                    servers_set.add(server)
-                tools_clean.append(tool)
+                    if server not in server_tools:
+                        server_tools[server] = []
+                    server_tools[server].append(tool)
 
-        return (tools_clean, sorted(servers_set))
+        return server_tools
 
     def _build_text(self, t: dict) -> str:
         """Build text representation: name + desc only (best performance: 99.1% hit rate)."""
