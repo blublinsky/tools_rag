@@ -9,6 +9,7 @@ dependencies = [
     "chromadb",
     "sentence-transformers",
     "pydantic>=2.0.0",
+    "openai>=1.0.0",
 ]
 
 [tool.hatch.build.targets.wheel]

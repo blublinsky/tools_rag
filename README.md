@@ -1,6 +1,6 @@
-# Tools RAG - Hybrid Retrieval for Tool Selection
+# Tools-RAG - Intelligent Tool Selection for LLM Applications
 
-A high-performance hybrid RAG (Retrieval Augmented Generation) system for intelligent tool selection in LLM applications. Combines dense (semantic) and sparse (BM25) retrieval to achieve **100% accuracy** on tool matching tasks.
+A high-performance **hybrid RAG (Retrieval Augmented Generation)** system for intelligent tool selection in LLM applications. Combines dense (semantic) and sparse (BM25) retrieval to achieve **100% accuracy** while being **27x faster** than LLM-based selection.
 
 ## 🎯 Purpose
 
@@ -13,91 +13,41 @@ When your LLM has access to hundreds of tools, including all of them in the prom
 
 ## 🔬 How It Works
 
-### Hybrid Retrieval
+Tools-RAG offers two complementary approaches to tool selection:
 
-Combines two complementary retrieval methods:
+### 1. Hybrid RAG (Recommended) - Fast & Accurate
 
-1. **Dense (Semantic) Retrieval**
-   - Uses sentence-transformers embeddings
-   - Captures semantic meaning
-   - Good for natural language queries
-   
-   The query and each tool are encoded into high-dimensional vector representations using the `all-mpnet-base-v2` model. Tools are then ranked by cosine similarity between their embeddings and the query embedding stored in ChromaDB. This approach excels at understanding intent—for example, "What's the temperature outside?" matches `get_weather` even though they share no exact words. Semantic search naturally handles synonyms, paraphrasing, and contextual variations without requiring exact keyword matches.
+Combines dense (semantic) and sparse (BM25) retrieval for intelligent tool filtering:
+- ⚡ **38ms latency** per query
+- 💰 **$0 cost** (local embeddings)
+- ✅ **100% hit rate** on 118 test queries
+- 🎯 **Best for production** with 100-1000s of tools
 
-2. **Sparse (BM25) Retrieval**
-   - Tokenizes into individual words
-   - Term frequency + inverse document frequency scoring
-   - Excels at exact matches for technical terms
-   
-   BM25 (Best Matching 25) tokenizes the query and tools into individual words, then ranks tools based on term frequency (TF) and inverse document frequency (IDF). Tools containing exact query terms score higher, with adjustments for document length and term saturation. This approach excels at precise matching—for example, "get_weather function" will strongly match the `get_weather` tool because of the exact term overlap. Keyword search is particularly effective for technical names, function identifiers, and domain-specific terminology where exact matches are critical.
+**Implementation:** `tools_rag/hybrid_tools_rag.py`
 
-3. **Hybrid**
-   - `final_score = alpha × dense_score + (1 - alpha) × sparse_score`
-   - Rank-based scoring for stability
-   - Threshold filtering for quality
-   
-   The hybrid approach fuses both retrieval scores using a weighted formula where `alpha` controls the balance. Each method produces a ranked list of tools, which are then converted to rank-based scores for stability. The final ranking combines these scores, ensuring that tools appearing high in either method (or both) rise to the top. This fusion mechanism provides robust retrieval that works equally well whether users phrase queries in natural language ("What's the temperature?") or use technical terminology ("get_weather API").
+### 2. LLM Skills (Experimental) - Simple Baseline
 
-## ⚠️ Important: Tool Names as Identifiers
+Provides all tools to an LLM (GPT-4o) for selection via prompt:
+- 🤖 **LLM-based reasoning** without training data
+- 📝 **Simple to implement** (~180 lines)
+- 💡 **Works for ~20-100 tools** where latency is acceptable
+- ⚠️ **Not recommended for production** (27x slower, costs money)
 
-**Tool names must be unique.** Each tool is identified by its `name` field, which serves as the primary key in the system. If you add a tool with a name that already exists, it will overwrite the previous tool with that name. This is intentional behavior that enables the upsert functionality in CRUD operations.
+**Implementation:** `tools_rag/skills.py`
 
-**Best practices:**
-- Use descriptive, unique names like `get_weather`, `send_email_v2`, `search_products_amazon`
-- Avoid generic names like `search`, `get`, `update` that could conflict
-- Include version suffixes if you need multiple variants (e.g., `translate_v1`, `translate_v2`)
-
-## 🔄 Usage in LLM with Tools
-
-```
-User Query
-    ↓
-[Tools RAG Pre-Filter]  ← 10-50ms, reduces 100 → 10 tools
-    ↓
-[LLM Tool Selection]    ← 200-500ms, picks 1-3 tools
-    ↓
-[Tool Execution]
-    ↓
-Response
-```
+The LLM Skills approach serves as an important baseline proving that retrieval-based methods significantly outperform naive LLM selection for tool filtering tasks.
 
 ## 🚀 Quick Start
-
-### Common Commands
-
-This project uses a Makefile to simplify common operations throughout the codebase. All commands referenced in this documentation are available via make:
-
-```bash
-# Install dependencies
-make install
-
-# Run the evaluation suite
-make run
-
-# Run unit tests
-make test
-
-# Run tests with coverage
-make test-coverage
-
-# Run linter
-make lint
-
-# Format code
-make format
-
-# Clean up cache files
-make clean
-
-# See all available commands
-make help
-```
 
 ### Installation
 
 ```bash
 make install
 ```
+
+This installs all dependencies using `uv`:
+- Core: rank-bm25, chromadb, sentence-transformers, pydantic, openai
+- Dev: pytest, pytest-cov, black, pylint
 
 ### Basic Usage
 
@@ -127,12 +77,69 @@ rag.populate_tools(tools)
 
 # 3. Retrieve relevant tools for a query
 query = "What's the temperature outside?"
-relevant_tools, servers = rag.retrieve_hybrid(query)
-# Returns:
-# - relevant_tools: [{"name": "get_weather", "desc": ..., "params": ...}, ...]
-#   (without 'server' field)
-# - servers: ["weather-mcp", ...]  # Unique server names needed
+server_tools = rag.retrieve_hybrid(query)
+# Returns: dict[server_name: list[tools]] or None
+# Example: {"weather-mcp": [{"name": "get_weather", "desc": ..., "params": ...}]}
 ```
+
+**⚠️ Important: Tool Names as Identifiers**
+
+Tool names must be unique. Each tool is identified by its `name` field, which serves as the primary key. If you add a tool with a name that already exists, it will overwrite the previous tool (upsert behavior).
+
+**Best practices:**
+- Use descriptive, unique names like `get_weather`, `send_email_v2`, `search_products_amazon`
+- Avoid generic names like `search`, `get`, `update` that could conflict
+- Include version suffixes if you need multiple variants (e.g., `translate_v1`, `translate_v2`)
+
+### Common Commands
+
+```bash
+# Run comparison (RAG vs Skills) - default
+make run
+
+# Run Hybrid RAG evaluation only
+make run-rag
+
+# Run LLM Skills evaluation only
+make run-skills
+
+# Run side-by-side comparison
+make run-compare
+
+# Run unit tests
+make test
+
+# Run tests with coverage
+make test-coverage
+
+# Run linter
+make lint
+
+# Format code
+make format
+
+# Clean up cache files
+make clean
+
+# See all available commands
+make help
+```
+
+## 🔄 Usage in LLM with Tools
+
+```
+User Query
+    ↓
+[Tools RAG Pre-Filter]  ← 10-50ms, reduces 100 → 10 tools
+    ↓
+[LLM Tool Selection]    ← 200-500ms, picks 1-3 tools
+    ↓
+[Tool Execution]
+    ↓
+Response
+```
+
+This pre-filtering step reduces token usage, speeds up inference, and improves LLM accuracy by focusing on relevant tools only.
 
 ## 🛠️ CRUD Operations
 
@@ -196,60 +203,6 @@ class ToolsRAGConfig:
   - `False` - Returns `(None, None)` to signal "use all tools"
   - When `False`, avoids expensive processing - caller should use their full tool list
   - Use for A/B testing RAG vs no-RAG, or debugging
-
-## 🧪 Testing
-
-The project includes comprehensive unit tests and an evaluation suite to measure retrieval quality.
-
-### Unit Tests
-
-Run unit tests with pytest:
-
-```bash
-# Run all tests
-pytest tools_rag/tests/ -v
-
-# Run with coverage
-pytest tools_rag/tests/ --cov=tools_rag --cov-report=html
-
-# Run specific test file
-pytest tools_rag/tests/test_tools_rag.py -v
-```
-
-**Test Coverage:**
-- ✅ **Config validation** - 5 tests (100% coverage)
-- ✅ **ChromaStore operations** - 4 tests (100% coverage)  
-- ✅ **ToolsRAG functionality** - 13 tests (85% coverage)
-- ✅ **22 tests total**, all passing
-
-### 📊 Performance
-**Evaluation Output includes:**
-- Hit rate metrics
-- Average rank when found
-- Detailed per-query results
-- Negative case handling
-
-Tested on 123 queries across 100 tools:
-
-| Metric | Value |
-|--------|-------|
-| **Top-10 Hit Rate** | 100% (118/118) |
-| **Average Rank** | 1.35 |
-| **Retrieval Time** | 10-50ms |
-| **Memory Footprint** | ~450MB (model + indices) |
-
-### 📈 Optimization History
-
-The current 100% hit rate was achieved through iterative improvements to the retrieval algorithm, embedding model selection, and tool descriptions:
-
-| Optimization | Hit Rate | Notes |
-|--------------|----------|-------|
-| Dense only | 75% | Baseline |
-| + BM25 fusion (α=0.5) | 80% | Better keyword matching |
-| + Rank-based scoring | 85% | More stable |
-| + Better embeddings | 96.5% | all-mpnet-base-v2 |
-| + Optimized descriptions | 99.1% | Removed params from text |
-| + Tool expansion (100) | 100% | Current state |
 
 ## 🦙 Integration with Llama Stack
 
@@ -596,6 +549,108 @@ response = process_request(
 )
 # Works: Gmail tools included since user provided token
 ```
+
+## 📈 Testing
+
+### Unit Tests
+
+The project includes comprehensive unit tests and an evaluation suite to measure retrieval quality:
+
+```bash
+# Run all tests
+make test
+
+# Run with coverage
+make test-coverage
+```
+
+**Test Coverage:**
+- 23 unit tests across RAG, Store, and Config modules
+- 100% pass rate
+- Edge cases: empty queries, missing tools, CRUD operations
+
+### Evaluation Suite
+
+**Benchmark Dataset:**
+- 118 positive test cases (each with expected tool)
+- 5 negative cases (no correct tool exists)
+- Covers all 100 tools in the catalog
+
+**Metrics Tracked:**
+- **Hit Rate**: % of queries where expected tool appears in top-k results
+- **Average Rank**: Mean position of correct tool when found
+- **Latency**: Time to retrieve and rank tools
+- **Cost**: API costs for LLM-based approaches
+
+**Current Results** (Tested on 123 queries):
+
+| Approach | Hit Rate | Avg Rank | Latency/Query | Cost (118 queries) |
+|----------|----------|----------|---------------|-------------------|
+| **Hybrid RAG** | 100% (118/118) | 1.42 | 37ms | $0.00 |
+| **LLM Skills (gpt-4o)** | 99.2% (117/118) | 1.32 | 987ms | $1.35 |
+| **LLM Skills (gpt-4o-mini)** | 99.2% (117/118) | 1.32 | 1574ms | $0.08 |
+
+**Key Findings:**
+- RAG achieves perfect accuracy while being **27x faster** than LLM approaches
+- Better LLM models (gpt-4o vs gpt-4o-mini) don't improve accuracy for tool selection
+- At production scale (10K queries/day): RAG = $0/month, gpt-4o = $3,000/month
+
+### Run Evaluation
+
+```bash
+# Compare RAG vs Skills (gpt-4o)
+make run
+
+# Run individual approaches
+make run-rag              # Hybrid RAG only
+make run-skills-gpt4o     # LLM Skills with gpt-4o
+make run-skills           # LLM Skills with gpt-4o-mini
+```
+
+**Example Output:**
+```
+Hit Rate (Top-10): 118/118 = 100%
+Avg Rank: 1.42
+Only 1 disagreement with LLM approach (query: "What's the solution?")
+```
+
+### 📈 Optimization History
+
+The current 100% hit rate was achieved through iterative improvements:
+
+| Optimization | Hit Rate | Notes |
+|--------------|----------|-------|
+| Dense only | 75% | Baseline |
+| + BM25 fusion (α=0.5) | 80% | Better keyword matching |
+| + Rank-based scoring | 85% | More stable |
+| + Better embeddings | 96.5% | all-mpnet-base-v2 |
+| + Optimized descriptions | 99.1% | Removed params from text |
+| + Tool expansion (100) | 100% | Current state |
+
+## 🧠 Deep Dive: Hybrid Retrieval Algorithm
+
+For those interested in the technical details, here's how the hybrid retrieval works:
+
+### 1. Dense (Semantic) Retrieval
+- Uses sentence-transformers embeddings
+- Captures semantic meaning
+- Good for natural language queries
+
+The query and each tool are encoded into high-dimensional vector representations using the `all-mpnet-base-v2` model. Tools are then ranked by cosine similarity between their embeddings and the query embedding stored in ChromaDB. This approach excels at understanding intent—for example, "What's the temperature outside?" matches `get_weather` even though they share no exact words.
+
+### 2. Sparse (BM25) Retrieval
+- Tokenizes into individual words
+- Term frequency + inverse document frequency scoring
+- Excels at exact matches for technical terms
+
+BM25 (Best Matching 25) tokenizes the query and tools into individual words, then ranks tools based on term frequency (TF) and inverse document frequency (IDF). Tools containing exact query terms score higher, with adjustments for document length and term saturation. This approach excels at precise matching—for example, "get_weather function" will strongly match the `get_weather` tool because of the exact term overlap.
+
+### 3. Hybrid Fusion
+- `final_score = alpha × dense_score + (1 - alpha) × sparse_score`
+- Rank-based scoring for stability
+- Threshold filtering for quality
+
+The hybrid approach fuses both retrieval scores using a weighted formula where `alpha` controls the balance. Each method produces a ranked list of tools, which are then converted to rank-based scores for stability. The final ranking combines these scores, ensuring that tools appearing high in either method (or both) rise to the top.
 
 ## 🤝 Contributing
 

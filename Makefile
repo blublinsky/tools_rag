@@ -1,4 +1,4 @@
-.PHONY: help install test test-verbose test-coverage run clean lint format
+.PHONY: help install test test-verbose test-coverage run run-rag run-skills run-skills-gpt4o run-compare run-compare-gpt4o clean lint format
 
 # Default target
 help:
@@ -6,14 +6,19 @@ help:
 	@echo "=================="
 	@echo ""
 	@echo "Available targets:"
-	@echo "  make install        - Install dependencies in virtual environment"
-	@echo "  make test           - Run all tests"
-	@echo "  make test-verbose   - Run tests with verbose output"
-	@echo "  make test-coverage  - Run tests with coverage report"
-	@echo "  make run            - Run the main evaluation script"
-	@echo "  make clean          - Clean up cache files and build artifacts"
-	@echo "  make lint           - Run linter (pylint)"
-	@echo "  make format         - Format code with black"
+	@echo "  make install            - Install dependencies in virtual environment"
+	@echo "  make test               - Run all tests"
+	@echo "  make test-verbose       - Run tests with verbose output"
+	@echo "  make test-coverage      - Run tests with coverage report"
+	@echo "  make run                - Run comparison (RAG vs Skills with gpt-4o)"
+	@echo "  make run-rag            - Run Hybrid RAG evaluation only"
+	@echo "  make run-skills         - Run LLM Skills (gpt-4o-mini)"
+	@echo "  make run-skills-gpt4o   - Run LLM Skills (gpt-4o)"
+	@echo "  make run-compare        - Run comparison with gpt-4o-mini"
+	@echo "  make run-compare-gpt4o  - Run comparison with gpt-4o"
+	@echo "  make clean              - Clean up cache files and build artifacts"
+	@echo "  make lint               - Run linter (pylint)"
+	@echo "  make format             - Format code with black"
 	@echo ""
 
 # Install dependencies with uv
@@ -42,10 +47,35 @@ test-coverage:
 	@echo "✓ Coverage report generated"
 	@echo "HTML report: htmlcov/index.html"
 
-# Run main evaluation script
+# Run comparison with gpt-4o (default)
 run:
-	@echo "Running Tools RAG evaluation..."
-	uv run python main.py
+	@echo "Running comparison (RAG vs Skills with gpt-4o)..."
+	uv run python main.py --mode compare --model gpt-4o
+
+# Run Hybrid RAG only
+run-rag:
+	@echo "Running Hybrid RAG evaluation..."
+	uv run python main.py --mode rag
+
+# Run LLM Skills with gpt-4o-mini
+run-skills:
+	@echo "Running LLM Skills evaluation (gpt-4o-mini)..."
+	uv run python main.py --mode skills --model gpt-4o-mini
+
+# Run LLM Skills with gpt-4o
+run-skills-gpt4o:
+	@echo "Running LLM Skills evaluation (gpt-4o)..."
+	uv run python main.py --mode skills --model gpt-4o
+
+# Run comparison with gpt-4o-mini
+run-compare:
+	@echo "Running comparison (gpt-4o-mini)..."
+	uv run python main.py --mode compare --model gpt-4o-mini
+
+# Run comparison with gpt-4o
+run-compare-gpt4o:
+	@echo "Running comparison (gpt-4o)..."
+	uv run python main.py --mode compare --model gpt-4o
 
 # Clean up cache and build files
 clean:
